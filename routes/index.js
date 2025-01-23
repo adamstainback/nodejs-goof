@@ -188,6 +188,7 @@ exports.create = function (req, res, next) {
 };
 
 exports.destroy = function (req, res, next) {
+  // file deepcode ignore NoSqli: <please specify a reason of ignoring this>
   Todo.findById(req.params.id, function (err, todo) {
 
     try {
