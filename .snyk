@@ -22,4 +22,9 @@ ignore:
         reason: None Given
         expires: 2025-02-22T20:08:52.889Z
         created: 2025-01-23T20:08:52.895Z
+  SNYK-JS-TYPEORM-590152:
+    - '*':
+        reason: None Given
+        expires: 2025-02-22T20:11:29.551Z
+        created: 2025-01-23T20:11:29.556Z
 patch: {}
