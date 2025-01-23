@@ -1,8 +1,12 @@
-# Snyk (https://snyk.io) policy file, ignores known vulnerabilities.
-version: v1.25.0
-# Ignores CWE-770 vulnerability in routes/index.js
+# Snyk (https://snyk.io) policy file, patches or ignores known vulnerabilities.
+version: v1.25.1
+# ignores vulnerabilities until expiry date; change duration by modifying expiry date
 ignore:
   CWE-770:
-    - "routes/index.js":  # Specify the exact file path
-        reason: "Temporary workaround until rate-limiting is implemented."
-# Remove the patch section as it's not applicable here
+    - routes/index.js:
+        reason: Temporary workaround until rate-limiting is implemented.
+    - '*':
+        reason: None Given
+        expires: 2025-02-22T19:53:17.515Z
+        created: 2025-01-23T19:53:17.519Z
+patch: {}
