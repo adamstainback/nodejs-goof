@@ -3,10 +3,8 @@ version: v1.25.1
 # ignores vulnerabilities until expiry date; change duration by modifying expiry date
 ignore:
   CWE-770:
-    - routes/index.js:
-        reason: Temporary workaround until rate-limiting is implemented.
     - '*':
         reason: None Given
-        expires: 2025-02-22T19:53:17.515Z
-        created: 2025-01-23T19:53:17.519Z
+        expires: 2025-02-22T19:54:22.963Z
+        created: 2025-01-23T19:54:22.964Z
 patch: {}
