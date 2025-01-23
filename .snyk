@@ -7,4 +7,9 @@ ignore:
         reason: None Given
         expires: 2025-02-22T19:54:22.963Z
         created: 2025-01-23T19:54:22.964Z
+  CWE-1321:
+    - '*':
+        reason: None Given
+        expires: 2025-02-22T20:00:03.642Z
+        created: 2025-01-23T20:00:03.646Z
 patch: {}
