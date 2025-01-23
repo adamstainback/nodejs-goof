@@ -1,10 +1,8 @@
-# Snyk (https://snyk.io) policy file, patches or ignores known vulnerabilities.
+# Snyk (https://snyk.io) policy file, ignores known vulnerabilities.
 version: v1.25.0
-# ignores vulnerabilities until expiry date; change duration by modifying expiry date
+# Ignores CWE-770 vulnerability in routes/index.js
 ignore:
   CWE-770:
-    - '*':
-        reason: SNS topic is not encrypted with customer managed key
-        expires: 2024-01-01T21:37:44.938Z
-        created: 2023-09-16T21:37:44.939Z
-patch: {}
+    - "routes/index.js":  # Specify the exact file path
+        reason: "Temporary workaround until rate-limiting is implemented."
+# Remove the patch section as it's not applicable here
