@@ -1,14 +1,10 @@
-language-settings:
-  node: "23.4.0"  # Replace with your actual Node.js version
-
+# Snyk (https://snyk.io) policy file, patches or ignores known vulnerabilities.
+version: v1.25.0
+# ignores vulnerabilities until expiry date; change duration by modifying expiry date
 ignore:
-  paths:
-    - "routes/index.js" 
-  # Alternatively, you can ignore all JavaScript files:
-  # - "**/*.js" 
-
-# Add a comment explaining the reason for the ignore
-# This is crucial for maintainability
-comments:
-  - "Ignoring CWE-770 in routes/index.js. 
-     Temporary workaround until rate-limiting is implemented."
+  CWE-770:
+    - '*':
+        reason: SNS topic is not encrypted with customer managed key
+        expires: 2024-01-01T21:37:44.938Z
+        created: 2023-09-16T21:37:44.939Z
+patch: {}
