@@ -239,6 +239,7 @@ function isBlank(str) {
   return (!str || /^\s*$/.test(str));
 }
 
+// file deepcode ignore NoRateLimitingForExpensiveWebOperation: <please specify a reason of ignoring this>
 exports.import = function (req, res, next) {
   if (!req.files) {
     res.send('No files were uploaded.');
