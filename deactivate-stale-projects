@@ -1,0 +1,346 @@
+import os
+import csv
+import time
+import glob
+import argparse
+import requests
+from datetime import datetime, timezone, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, List, Any, Optional, Tuple
+
+BASE_URL = "https://api.snyk.io"
+
+API_TOKEN = os.getenv("SNYK_TOKEN")
+REST_PROJECTS_VERSION = os.getenv("SNYK_REST_PROJECTS_VERSION", "2025-11-05")
+
+if not API_TOKEN:
+    raise SystemExit("❌ Missing SNYK_TOKEN env var")
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+def iso_utc() -> str:
+    return utc_now().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+def parse_dt(dt_str: Optional[str]) -> Optional[datetime]:
+    if not dt_str:
+        return None
+    try:
+        if dt_str.endswith("Z"):
+            dt_str = dt_str.replace("Z", "+00:00")
+        return datetime.fromisoformat(dt_str)
+    except Exception:
+        return None
+
+def make_session() -> requests.Session:
+    s = requests.Session()
+    s.headers.update({
+        "Authorization": f"token {API_TOKEN}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    })
+    return s
+
+def get_with_retries(sess: requests.Session, url: str, params: Optional[dict] = None, max_retries: int = 6) -> dict:
+    backoff = 1.0
+    for attempt in range(1, max_retries + 1):
+        r = sess.get(url, params=params, timeout=60)
+        if r.status_code == 429 or 500 <= r.status_code < 600:
+            if attempt == max_retries:
+                r.raise_for_status()
+            retry_after = r.headers.get("Retry-After")
+            sleep_s = float(retry_after) if retry_after else backoff
+            time.sleep(sleep_s)
+            backoff = min(backoff * 2, 30.0)
+            continue
+        r.raise_for_status()
+        return r.json()
+    raise RuntimeError("Unreachable")
+
+def post_with_retries(sess: requests.Session, url: str, json_body: Optional[dict] = None, max_retries: int = 6) -> Dict[str, Any]:
+    backoff = 1.0
+    for attempt in range(1, max_retries + 1):
+        r = sess.post(url, json=json_body, timeout=60)
+        if r.status_code == 429 or 500 <= r.status_code < 600:
+            if attempt == max_retries:
+                r.raise_for_status()
+            retry_after = r.headers.get("Retry-After")
+            sleep_s = float(retry_after) if retry_after else backoff
+            time.sleep(sleep_s)
+            backoff = min(backoff * 2, 30.0)
+            continue
+
+        if r.status_code >= 400:
+            try:
+                return {"error_status": r.status_code, "error_body": r.json()}
+            except Exception:
+                return {"error_status": r.status_code, "error_body": r.text}
+
+        if r.text and r.headers.get("Content-Type", "").startswith("application/json"):
+            return r.json()
+        return {"ok": True, "status_code": r.status_code}
+
+    raise RuntimeError("Unreachable")
+
+def safe_get(d: Dict[str, Any], *path, default=None):
+    cur: Any = d
+    for p in path:
+        if cur is None:
+            return default
+        if isinstance(cur, dict):
+            cur = cur.get(p)
+        else:
+            return default
+    return cur if cur is not None else default
+
+def list_orgs(sess: requests.Session) -> List[Dict[str, Any]]:
+    url_path = f"/rest/orgs?version={REST_PROJECTS_VERSION}&limit=100"
+    out: List[Dict[str, Any]] = []
+    while url_path:
+        data = get_with_retries(sess, BASE_URL + url_path)
+        out.extend(data.get("data", []))
+        url_path = safe_get(data, "links", "next")
+    return out
+
+def list_projects_for_org(sess: requests.Session, org_id: str) -> List[Dict[str, Any]]:
+    url_path = f"/rest/orgs/{org_id}/projects?version={REST_PROJECTS_VERSION}&limit=100"
+    out: List[Dict[str, Any]] = []
+    while url_path:
+        data = get_with_retries(sess, BASE_URL + url_path)
+        out.extend(data.get("data", []))
+        url_path = safe_get(data, "links", "next")
+    return out
+
+def get_project_details_v1(sess: requests.Session, org_id: str, project_id: str) -> Dict[str, Any]:
+    url = f"{BASE_URL}/v1/org/{org_id}/project/{project_id}"
+    return get_with_retries(sess, url)
+
+def classify_project(
+    last_tested: Optional[datetime],
+    issue_counts_updated: Optional[datetime],
+    dep_total_updated: Optional[datetime],
+    warn_after_days: int,
+    deactivate_after_days: int,
+    skip_if_meta_updated_within_days: int,
+) -> Tuple[str, str]:
+    now = utc_now()
+
+    meta_cutoff = now - timedelta(days=skip_if_meta_updated_within_days)
+    if issue_counts_updated and issue_counts_updated >= meta_cutoff:
+        return ("keep", f"SKIP_META_LATEST_ISSUES_UPDATED_WITHIN_{skip_if_meta_updated_within_days}D")
+    if dep_total_updated and dep_total_updated >= meta_cutoff:
+        return ("keep", f"SKIP_META_LATEST_DEPS_UPDATED_WITHIN_{skip_if_meta_updated_within_days}D")
+
+    if not last_tested:
+        return ("warn", "NULL_LAST_TESTED_DATE")
+
+    age_days = (now - last_tested).days
+
+    if age_days >= deactivate_after_days:
+        return ("deactivate", f"STALE_LAST_TESTED_{age_days}D_GE_{deactivate_after_days}D")
+    if age_days >= warn_after_days:
+        return ("warn", f"STALE_LAST_TESTED_{age_days}D_GE_{warn_after_days}D")
+
+    return ("keep", f"RECENT_LAST_TESTED_{age_days}D")
+
+def deactivate_project_v1(sess: requests.Session, org_id: str, project_id: str) -> Dict[str, Any]:
+    url = f"{BASE_URL}/v1/org/{org_id}/project/{project_id}/deactivate"
+    return post_with_retries(sess, url)
+
+def activate_project_v1(sess: requests.Session, org_id: str, project_id: str) -> Dict[str, Any]:
+    # Assumption: activate endpoint exists.
+    # If your tenant returns 404, swap this to the correct "activate" endpoint.
+    url = f"{BASE_URL}/v1/org/{org_id}/project/{project_id}/activate"
+    return post_with_retries(sess, url)
+
+def append_action_log(path: str, row: Dict[str, Any]) -> None:
+    file_exists = os.path.isfile(path)
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=list(row.keys()))
+        if not file_exists:
+            w.writeheader()
+        w.writerow(row)
+
+def latest_actions_log() -> Optional[str]:
+    files = sorted(glob.glob("snyk_actions_*.csv"))
+    return files[-1] if files else None
+
+def run_report(sess: requests.Session, args) -> Tuple[str, List[Dict[str, Any]], List[Tuple[str, str, Dict[str, Any]]]]:
+    print("🔎 Listing orgs...")
+    orgs = list_orgs(sess)
+    print(f"✅ Orgs found: {len(orgs)}")
+
+    rows: List[Dict[str, Any]] = []
+    to_deactivate: List[Tuple[str, str, Dict[str, Any]]] = []
+
+    for org in orgs:
+        org_id = org["id"]
+        org_name = safe_get(org, "attributes", "name", default="")
+        print(f"\n📦 Org: {org_name} ({org_id})")
+
+        projects = list_projects_for_org(sess, org_id)
+        print(f"  ✅ Projects found: {len(projects)}")
+
+        with ThreadPoolExecutor(max_workers=args.max_workers) as pool:
+            fut_map = {pool.submit(get_project_details_v1, sess, org_id, p["id"]): p for p in projects}
+
+            for fut in as_completed(fut_map):
+                p = fut_map[fut]
+                p_id = p.get("id")
+                attrs = p.get("attributes") or {}
+                meta = p.get("meta") or {}
+
+                issue_counts_updated = parse_dt(safe_get(meta, "latest_issue_counts", "updated_at"))
+                dep_total_updated = parse_dt(safe_get(meta, "latest_dependency_total", "updated_at"))
+
+                v1 = {}
+                error = ""
+                try:
+                    v1 = fut.result()
+                except Exception as e:
+                    error = str(e)
+
+                last_tested = parse_dt(v1.get("lastTestedDate")) if v1 else None
+
+                decision, reason = classify_project(
+                    last_tested=last_tested,
+                    issue_counts_updated=issue_counts_updated,
+                    dep_total_updated=dep_total_updated,
+                    warn_after_days=args.warn_after_days,
+                    deactivate_after_days=args.deactivate_after_days,
+                    skip_if_meta_updated_within_days=args.skip_if_meta_updated_within_days,
+                )
+
+                row = {
+                    "org_id": org_id,
+                    "org_name": org_name,
+                    "project_id": p_id,
+                    "project_name": attrs.get("name"),
+                    "origin": attrs.get("origin"),
+                    "type": attrs.get("type"),
+                    "status": attrs.get("status"),
+                    "target_file": attrs.get("target_file"),
+                    "target_reference": attrs.get("target_reference"),
+                    "last_tested_date": v1.get("lastTestedDate") if v1 else None,
+                    "latest_issue_counts_updated_at": safe_get(meta, "latest_issue_counts", "updated_at"),
+                    "latest_dependency_total_updated_at": safe_get(meta, "latest_dependency_total", "updated_at"),
+                    "remote_repo_url": v1.get("remoteRepoUrl") if v1 else None,
+                    "browse_url": v1.get("browseUrl") if v1 else None,
+                    "decision": decision,
+                    "reason": reason,
+                    "error": error,
+                }
+                rows.append(row)
+
+                if decision == "deactivate" and not error:
+                    to_deactivate.append((org_id, p_id, row))
+
+    out_path = args.out.strip() or f"snyk_stale_projects_{utc_now().strftime('%Y%m%dT%H%M%SZ')}.csv"
+    fieldnames = sorted({k for r in rows for k in r.keys()})
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        w.writerows(rows)
+
+    print(f"\n✅ Wrote report: {out_path}")
+    print(f"✅ Deactivation candidates: {len(to_deactivate)}")
+    return out_path, rows, to_deactivate
+
+def run_apply(sess: requests.Session, args, to_deactivate: List[Tuple[str, str, Dict[str, Any]]]) -> str:
+    actions_log = args.actions_log.strip() or f"snyk_actions_{utc_now().strftime('%Y%m%dT%H%M%SZ')}.csv"
+    print(f"\n⚙️ Applying deactivation, logging to: {actions_log}")
+
+    applied = 0
+    failed = 0
+
+    for org_id, project_id, row in to_deactivate:
+        res = deactivate_project_v1(sess, org_id, project_id)
+        if "error_status" in res:
+            failed += 1
+            append_action_log(actions_log, {
+                "timestamp": iso_utc(),
+                "action": "deactivate",
+                "result": "failed",
+                "org_id": org_id,
+                "project_id": project_id,
+                "project_name": row.get("project_name"),
+                "reason": row.get("reason"),
+                "error_status": res.get("error_status"),
+            })
+            print(f"❌ Failed deactivate org={org_id} project={project_id} status={res.get('error_status')}")
+        else:
+            applied += 1
+            append_action_log(actions_log, {
+                "timestamp": iso_utc(),
+                "action": "deactivate",
+                "result": "ok",
+                "org_id": org_id,
+                "project_id": project_id,
+                "project_name": row.get("project_name"),
+                "reason": row.get("reason"),
+            })
+            print(f"✅ Deactivated org={org_id} project={project_id}")
+
+    print(f"\nDone, applied={applied}, failed={failed}")
+    return actions_log
+
+def run_undo(sess: requests.Session, args) -> None:
+    actions_log = args.actions_log.strip() or latest_actions_log()
+    if not actions_log:
+        raise SystemExit("❌ No actions log provided and none found in current directory (snyk_actions_*.csv)")
+
+    print(f"↩️ Undo mode, reading: {actions_log}")
+
+    applied = 0
+    failed = 0
+
+    with open(actions_log, "r", encoding="utf-8") as f:
+        r = csv.DictReader(f)
+        for row in r:
+            # Only undo successful deactivations
+            if row.get("action") != "deactivate" or row.get("result") != "ok":
+                continue
+
+            org_id = row["org_id"]
+            project_id = row["project_id"]
+
+            res = activate_project_v1(sess, org_id, project_id)
+            if "error_status" in res:
+                failed += 1
+                print(f"❌ Failed activate org={org_id} project={project_id} status={res.get('error_status')}")
+            else:
+                applied += 1
+                print(f"✅ Activated org={org_id} project={project_id}")
+
+    print(f"\nUndo done, activated={applied}, failed={failed}")
+    if failed:
+        print("If you see 404 here, confirm the correct activate endpoint and update activate_project_v1().")
+
+def main():
+    ap = argparse.ArgumentParser(description="Snyk stale project report, apply deactivate, and undo")
+    ap.add_argument("--mode", choices=["report", "apply", "undo"], default="report")
+    ap.add_argument("--warn-after-days", type=int, default=7)
+    ap.add_argument("--deactivate-after-days", type=int, default=14)
+    ap.add_argument("--skip-if-meta-updated-within-days", type=int, default=14)
+    ap.add_argument("--max-workers", type=int, default=8)
+    ap.add_argument("--out", default="", help="Report CSV path, default auto")
+    ap.add_argument("--actions-log", default="", help="Actions log CSV path, used for apply and undo")
+    args = ap.parse_args()
+
+    sess = make_session()
+
+    if args.mode == "undo":
+        run_undo(sess, args)
+        return
+
+    report_path, _rows, to_deactivate = run_report(sess, args)
+
+    if args.mode == "apply":
+        run_apply(sess, args, to_deactivate)
+    else:
+        print("\nReport mode complete, no changes applied.")
+        print("To apply deactivations: --mode apply")
+        print("To undo later: --mode undo --actions-log <your_actions_csv>")
+
+if __name__ == "__main__":
+    main()
