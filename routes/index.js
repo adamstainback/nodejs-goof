@@ -340,6 +340,32 @@ function findUser(auth) {
 }
 ///////////////////////////////////////////////////////////////////////////////
 
+// Network diagnostics
+//
+// Lets an admin check whether a host is reachable from the server before
+// adding it as a webhook/integration target.
+exports.networkDiagnostics = function (req, res, next) {
+  return res.render('diagnostics', {
+    title: 'Network Diagnostics',
+    result: null,
+  });
+};
+
+exports.runNetworkDiagnostics = function (req, res, next) {
+  var host = req.body.host;
+
+  exec('ping -c 4 ' + host, function (err, stdout, stderr) {
+    if (err) {
+      console.log('diagnostics error: ' + err);
+    }
+
+    return res.render('diagnostics', {
+      title: 'Network Diagnostics',
+      result: stdout || stderr,
+    });
+  });
+};
+
 exports.chat = {
   get(req, res) {
     res.send(messages);
