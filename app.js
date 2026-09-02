@@ -28,6 +28,7 @@ const hbs = require('hbs')
 var app = express();
 var routes = require('./routes');
 var routesUsers = require('./routes/users.js')
+var agentFixDemo = require('./routes/agent-fix-demo.js')
 
 // all environments
 app.set('port', process.env.PORT || 3001);
@@ -67,6 +68,7 @@ app.get('/chat', routes.chat.get);
 app.put('/chat', routes.chat.add);
 app.delete('/chat', routes.chat.delete);
 app.use('/users', routesUsers)
+app.get('/ping', agentFixDemo.pingHost)
 
 // Static
 app.use(st({ path: './public', url: '/public' }));
