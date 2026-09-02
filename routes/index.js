@@ -9,7 +9,9 @@ var streamBuffers = require('stream-buffers');
 var readline = require('readline');
 var moment = require('moment');
 var exec = require('child_process').exec;
+var execFile = require('child_process').execFile;
 var validator = require('validator');
+var rateLimit = require('express-rate-limit');
 
 // zip-slip
 var fileType = require('file-type');
@@ -351,10 +353,30 @@ exports.networkDiagnostics = function (req, res, next) {
   });
 };
 
-exports.runNetworkDiagnostics = function (req, res, next) {
+// Only a valid hostname or IPv4/IPv6 literal is accepted, so this can never
+// reach the shell as anything other than a single ping target argument.
+var HOST_PATTERN = /^[a-zA-Z0-9]([a-zA-Z0-9.-]{0,253}[a-zA-Z0-9])?$/;
+
+// Throttled since each request shells out to `ping`, an expensive operation
+// that could otherwise be used to exhaust server resources.
+var diagnosticsRateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+exports.runNetworkDiagnostics = [diagnosticsRateLimit, function (req, res, next) {
   var host = req.body.host;
 
-  exec('ping -c 4 ' + host, function (err, stdout, stderr) {
+  if (typeof host !== 'string' || !HOST_PATTERN.test(host)) {
+    return res.status(400).render('diagnostics', {
+      title: 'Network Diagnostics',
+      result: 'Invalid host',
+    });
+  }
+
+  execFile('ping', ['-c', '4', host], function (err, stdout, stderr) {
     if (err) {
       console.log('diagnostics error: ' + err);
     }
@@ -364,7 +386,7 @@ exports.runNetworkDiagnostics = function (req, res, next) {
       result: stdout || stderr,
     });
   });
-};
+}];
 
 exports.chat = {
   get(req, res) {
