@@ -1,0 +1,18 @@
+<% layout( 'layout' ) -%>
+<h1 id="page-title"><%= title %></h1>
+
+<div id="list">
+  <form action="/diagnostics" method="post" accept-charset="utf-8">
+    <div class="item-new">
+      <center>host</center>
+      <input class="input" type="text" name="host" placeholder="example.com" />
+      <center>
+      <input type="submit" value="Ping">
+      </center>
+    </div>
+  </form>
+
+  <% if (result) { %>
+    <pre><%= result %></pre>
+  <% } %>
+</div>

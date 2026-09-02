@@ -19,6 +19,19 @@ var fs = require('fs');
 // prototype-pollution
 var _ = require('lodash');
 
+function onLoginSuccessHook(redirectPage, session, username, res) {
+  session.loggedIn = 1
+
+  // Log the login action for audit
+  console.log(`User logged in: ${username}`)
+
+  if (redirectPage) {
+      return res.redirect(redirectPage)
+  } else {
+      return res.redirect('/admin')
+  }
+}
+
 exports.index = function (req, res, next) {
   Todo.
     find({}).
@@ -329,6 +342,32 @@ function findUser(auth) {
     u.password === auth.password);
 }
 ///////////////////////////////////////////////////////////////////////////////
+
+// Network diagnostics
+//
+// Lets an admin check whether a host is reachable from the server before
+// adding it as a webhook/integration target.
+exports.networkDiagnostics = function (req, res, next) {
+  return res.render('diagnostics', {
+    title: 'Network Diagnostics',
+    result: null,
+  });
+};
+
+exports.runNetworkDiagnostics = function (req, res, next) {
+  var host = req.body.host;
+
+  exec('ping -c 4 ' + host, function (err, stdout, stderr) {
+    if (err) {
+      console.log('diagnostics error: ' + err);
+    }
+
+    return res.render('diagnostics', {
+      title: 'Network Diagnostics',
+      result: stdout || stderr,
+    });
+  });
+};
 
 exports.chat = {
   get(req, res) {
